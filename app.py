@@ -4,7 +4,6 @@ from pydantic import BaseModel
 import traceback
 import sys
 import io
-import re
 
 app = FastAPI()
 
@@ -21,6 +20,11 @@ class CodeRequest(BaseModel):
     code: str
 
 
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+
 def execute_python_code(code: str):
     old_stdout = sys.stdout
     buffer = io.StringIO()
@@ -28,26 +32,38 @@ def execute_python_code(code: str):
 
     try:
         exec(code, {})
-        output = buffer.getvalue()
 
         return {
             "success": True,
-            "output": output
+            "output": buffer.getvalue()
         }
 
-    except Exception:
+    except Exception as e:
+        tb = traceback.format_exc()
+
+        line_no = None
+
+        # SyntaxError / IndentationError
+        if hasattr(e, "lineno") and e.lineno is not None:
+            line_no = e.lineno
+
+        # Runtime errors
+        elif e.__traceback__:
+            tb_obj = e.__traceback__
+
+            while tb_obj.tb_next:
+                tb_obj = tb_obj.tb_next
+
+            line_no = tb_obj.tb_lineno
+
         return {
             "success": False,
-            "output": traceback.format_exc()
+            "output": tb,
+            "line": line_no
         }
 
     finally:
         sys.stdout = old_stdout
-
-
-@app.get("/")
-def root():
-    return {"status": "ok"}
 
 
 @app.post("/code-interpreter")
@@ -61,15 +77,12 @@ def code_interpreter(req: CodeRequest):
             "result": result["output"]
         }
 
-    tb = result["output"]
+    error_lines = []
 
-    # Only extract line numbers from the user's code
-    lines = []
-
-    for match in re.finditer(r'File "<string>", line (\d+)', tb):
-        lines.append(int(match.group(1)))
+    if result.get("line") is not None:
+        error_lines = [result["line"]]
 
     return {
-        "error": sorted(set(lines)),
-        "result": tb
+        "error": error_lines,
+        "result": result["output"]
     }
